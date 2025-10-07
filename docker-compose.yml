@@ -1,0 +1,25 @@
+services:
+  lsb_mujoco:
+    privileged: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - path: ./.env
+        required: true
+    container_name: lsb_mujoco
+    ports:
+      - "5901:5901"   # VNC
+      - "6901:6901"   # noVNC / websockify
+    cap_add:
+      - NET_ADMIN      # required if the container manages networking (iptables, wireguard)
+    environment:
+      DISPLAY: ":1"
+      # Environment variables for the consolidated webapp
+      CONNECTION_NAME: "lsb5"
+      PRIMARY_COLOR: "#8bc34a"
+      BG_GRADIENT_START: "#1b5e20"
+      BG_GRADIENT_END: "#388e3c"
+    restart: unless-stopped
+    devices:
+      - /dev/net/tun

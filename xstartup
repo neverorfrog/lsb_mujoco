@@ -1,0 +1,113 @@
+#!/bin/bash
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+
+# Black background - no desktop
+xsetroot -solid black
+
+# Start window manager with minimal configuration
+openbox &
+WM_PID=$!
+
+# Wait for window manager
+sleep 3
+
+# Function to launch and configure MJPC
+launch_mjpc() {
+    echo "Starting MJPC directly..."
+    export DISPLAY=:1
+    cd /app/mujoco_mpc/build/bin
+    echo "Launching MJPC from $(pwd) as root..."
+
+    # Launch MJPC as root
+    sudo ./mjpc &
+    MJPC_PID=$!
+
+    # Wait for MJPC window to appear
+    sleep 2
+
+    # Try multiple window title variations and make fullscreen
+    for window_name in "mjpc" "MuJoCo" "MJPC" "mujoco"; do
+        if wmctrl -l | grep -i "$window_name" > /dev/null; then
+            echo "Found MJPC window: $window_name"
+            # Remove decorations and make fullscreen
+            wmctrl -r "$window_name" -b remove,maximized_vert,maximized_horz
+            wmctrl -r "$window_name" -b add,fullscreen,above,skip_taskbar,skip_pager
+            # Focus the window
+            wmctrl -a "$window_name"
+            break
+        fi
+    done
+
+    return $MJPC_PID
+}
+
+# Create openbox configuration to prevent desktop access
+mkdir -p ~/.config/openbox
+cat > ~/.config/openbox/rc.xml << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <applications>
+    <application name="*mjpc*" class="*">
+      <fullscreen>true</fullscreen>
+      <layer>above</layer>
+      <focus>yes</focus>
+      <skip_pager>yes</skip_pager>
+      <skip_taskbar>yes</skip_taskbar>
+    </application>
+  </applications>
+  <keyboard>
+    <!-- Disable common window management shortcuts -->
+    <keybind key="A-F4"><action name="Execute"><command>echo "disabled"</command></action></keybind>
+    <keybind key="A-Tab"><action name="Execute"><command>echo "disabled"</command></action></keybind>
+    <keybind key="C-A-t"><action name="Execute"><command>echo "disabled"</command></action></keybind>
+  </keyboard>
+  <mouse>
+    <!-- Disable right-click desktop menu -->
+    <context name="Desktop">
+      <mousebind button="Right" action="Click"><action name="Execute"><command>echo "disabled"</command></action></mousebind>
+    </context>
+  </mouse>
+</openbox_config>
+EOF
+
+# Empty desktop menu
+cat > ~/.config/openbox/menu.xml << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/">
+<menu id="root-menu" label="Kiosk">
+  <!-- No menu items -->
+</menu>
+</openbox_menu>
+EOF
+
+# Restart openbox to apply configuration
+killall openbox 2>/dev/null || true
+sleep 1
+openbox &
+WM_PID=$!
+sleep 2
+
+# Launch MJPC initially
+launch_mjpc
+MJPC_PID=$!
+
+# Monitor MJPC and restart if it closes
+while true; do
+    if ! kill -0 $MJPC_PID 2>/dev/null; then
+        echo "MJPC process ended, restarting in 2 seconds..."
+        sleep 2
+        launch_mjpc
+        MJPC_PID=$!
+    fi
+
+    # Ensure MJPC window stays on top every 10 seconds
+    sleep 10
+    for window_name in "mjpc" "MuJoCo" "MJPC" "mujoco"; do
+        if wmctrl -l | grep -i "$window_name" > /dev/null; then
+            wmctrl -r "$window_name" -b add,fullscreen,above
+            wmctrl -a "$window_name"
+            break
+        fi
+    done
+done
