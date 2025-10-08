@@ -315,7 +315,3 @@ iptables -I INPUT -i wg0 -p tcp --dport 6901 -j ACCEPT  # noVNC files
 - **TigerVNC**: High-performance VNC server
 - **Flask-Sock**: WebSocket extension for Flask
 - **MuJoCo MPC**: Example GUI application (https://github.com/google-deepmind/mujoco_mpc)
-
-## License
-
-[Add your license here]
