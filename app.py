@@ -1,7 +1,11 @@
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request, Response
+import requests
 import os
+from flask_sock import Sock
+import socket as stdlib_socket
 
 app = Flask(__name__)
+sock = Sock(app)
 
 # Configuration from environment variables
 CONNECTION_NAME = os.getenv("CONNECTION_NAME", "lsb5")
@@ -12,7 +16,7 @@ SERVICE_DESCRIPTION = os.getenv(
 
 # VNC Configuration
 VNC_PORT = os.getenv("VNC_PORT", "5901")
-NOVNC_PORT = os.getenv("NOVNC_PORT", "6901")
+WEBSOCKIFY_PORT = "6901"
 
 # Styling from environment
 PRIMARY_COLOR = os.getenv("PRIMARY_COLOR", "#8bc34a")
@@ -89,6 +93,12 @@ HTML_PAGE = """
             border-radius: 50%;
             background: {{primary_color}};
             box-shadow: 0 0 8px {{primary_color}}50;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
         }
 
         .control-group {
@@ -131,103 +141,6 @@ HTML_PAGE = """
             border: none;
             background: #000;
         }
-
-        .loading-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: linear-gradient(135deg, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.8) 100%);
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            z-index: 500;
-            transition: opacity 0.5s ease;
-        }
-
-        .spinner {
-            width: 48px;
-            height: 48px;
-            border: 3px solid rgba(255,255,255,0.2);
-            border-top: 3px solid {{primary_color}};
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-bottom: 24px;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        .loading-text {
-            font-size: 16px;
-            font-weight: 500;
-            margin-bottom: 8px;
-            color: white;
-        }
-
-        .loading-subtitle {
-            font-size: 13px;
-            opacity: 0.7;
-            text-align: center;
-            max-width: 300px;
-            line-height: 1.4;
-        }
-
-        .error-state {
-            display: none;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            height: 100%;
-            text-align: center;
-            padding: 40px;
-        }
-
-        .error-state.visible {
-            display: flex;
-        }
-
-        .error-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
-            opacity: 0.6;
-        }
-
-        .error-title {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            color: #ff6b6b;
-        }
-
-        .error-message {
-            font-size: 14px;
-            opacity: 0.8;
-            margin-bottom: 20px;
-            max-width: 400px;
-            line-height: 1.5;
-        }
-
-        .control-btn {
-            background: rgba(255,255,255,0.1);
-            border: 1px solid rgba(255,255,255,0.2);
-            color: white;
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s ease;
-        }
-
-        .control-btn:hover {
-            background: rgba(255,255,255,0.2);
-            border-color: rgba(255,255,255,0.3);
-        }
     </style>
 </head>
 <body>
@@ -240,7 +153,7 @@ HTML_PAGE = """
         <div class="status-controls">
             <div class="status-item">
                 <div class="status-dot"></div>
-                <span>Lab Ready</span>
+                <span>Connected</span>
             </div>
 
             <div class="control-group">
@@ -255,119 +168,146 @@ HTML_PAGE = """
     </div>
 
     <div class="main-container">
-        <div id="loading" class="loading-overlay">
-            <div class="spinner"></div>
-            <div class="loading-text">Initializing Lab Environment</div>
-            <div class="loading-subtitle">
-                Starting MJPC simulation and establishing VNC connection...
-            </div>
-        </div>
-
-        <div id="error" class="error-state">
-            <div class="error-icon">⚠️</div>
-            <div class="error-title">Connection Failed</div>
-            <div class="error-message">
-                Unable to connect to the lab environment. The VNC service may still be starting up.
-            </div>
-            <button class="control-btn" onclick="reloadVNC()">Try Again</button>
-        </div>
-
-        <iframe id="vnc-frame" class="vnc-frame" style="display: none;"></iframe>
+        <iframe id="vnc-frame" class="vnc-frame"></iframe>
     </div>
 
     <script>
-        let vncLoadTimeout;
-
         function initializeVNC() {
             const frame = document.getElementById('vnc-frame');
-            const loading = document.getElementById('loading');
-            const error = document.getElementById('error');
-
-            // Reset states
-            loading.style.display = 'flex';
-            error.classList.remove('visible');
-            frame.style.display = 'none';
-
-            // Use window.location.hostname to connect to the LSB container's IP
-            // This resolves to the actual container IP (e.g., 10.8.0.5) instead of localhost
-            const vncUrl = 'http://' + window.location.hostname + ':{{novnc_port}}/vnc.html?autoconnect=true&resize=scale&quality=9&compression=2';
-            console.log('Connecting to VNC at:', vncUrl);
-
+            
+            // Load noVNC through Flask proxy
+            const vncUrl = '/novnc/vnc.html?autoconnect=true&resize=scale&quality=9&compression=2&path=websockify';
+            
+            console.log('Loading noVNC through Flask proxy');
             frame.src = vncUrl;
-
-            // Set timeout for connection
-            vncLoadTimeout = setTimeout(() => {
-                if (frame.style.display === 'none') {
-                    showError();
-                }
-            }, 15000);
-
-            frame.onload = function() {
-                clearTimeout(vncLoadTimeout);
-                // Give noVNC time to establish connection
-                setTimeout(() => {
-                    loading.style.opacity = '0';
-                    setTimeout(() => {
-                        loading.style.display = 'none';
-                        frame.style.display = 'block';
-                    }, 500);
-                }, 2000);
-            };
-
-            frame.onerror = function() {
-                clearTimeout(vncLoadTimeout);
-                showError();
-            };
-        }
-
-        function showError() {
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('error').classList.add('visible');
         }
 
         function toggleFullscreen() {
             const frame = document.getElementById('vnc-frame');
             if (document.fullscreenElement) {
                 document.exitFullscreen();
-            } else if (frame.style.display !== 'none') {
+            } else {
                 frame.requestFullscreen().catch(err => {
-                    console.log('Fullscreen failed:', err);
+                    console.log('Fullscreen error:', err);
                 });
             }
         }
 
-
         function reloadVNC() {
-            clearTimeout(vncLoadTimeout);
-            initializeVNC();
+            const frame = document.getElementById('vnc-frame');
+            frame.src = frame.src;
         }
 
-        // Initialize when page loads
-        document.addEventListener('DOMContentLoaded', function() {
-            initializeVNC();
-        });
-
-        // Handle fullscreen changes
-        document.addEventListener('fullscreenchange', function() {
-            // You could add fullscreen-specific styling here if needed
-        });
-
-        // Click outside to hide connection info
-        document.addEventListener('click', function(event) {
-            const info = document.getElementById('connection-info');
-            const infoButton = event.target.closest('.control-btn');
-
-            if (connectionInfoVisible && !info.contains(event.target) &&
-                (!infoButton || !infoButton.textContent.includes('Info'))) {
-                info.classList.remove('visible');
-                connectionInfoVisible = false;
-            }
-        });
+        document.addEventListener('DOMContentLoaded', initializeVNC);
     </script>
 </body>
 </html>
 """
 
+
+@app.route('/novnc/<path:path>')
+def novnc_proxy(path):
+    """Proxy noVNC static files from websockify"""
+    target_url = f'http://127.0.0.1:{WEBSOCKIFY_PORT}/{path}'
+    
+    if request.query_string:
+        target_url += '?' + request.query_string.decode('utf-8')
+    
+    try:
+        resp = requests.get(target_url, stream=True, timeout=10)
+        
+        def generate():
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        
+        headers = {
+            key: value for key, value in resp.headers.items()
+            if key.lower() not in ['content-encoding', 'transfer-encoding', 'content-length']
+        }
+        
+        return Response(generate(), status=resp.status_code, headers=headers)
+        
+    except requests.exceptions.ConnectionError:
+        return "Cannot connect to noVNC service", 503
+    except Exception as e:
+        return f"Proxy error: {str(e)}", 500
+
+
+
+def websockify_proxy_handler(ws):
+    """WebSocket to VNC proxy - bidirectional forwarding"""
+    from threading import Thread, Event
+    
+    backend = None
+    try:
+        backend = stdlib_socket.socket(stdlib_socket.AF_INET, stdlib_socket.SOCK_STREAM)
+        backend.connect(('127.0.0.1', int(VNC_PORT)))
+        print(f"WebSocket connected to VNC on port {VNC_PORT}")
+        
+        stop_event = Event()
+        
+        def forward_from_client():
+            try:
+                while not stop_event.is_set():
+                    try:
+                        data = ws.receive(timeout=1.0)
+                        if data is None:
+                            break
+                        if isinstance(data, str):
+                            data = data.encode('latin-1')
+                        backend.sendall(data)
+                    except:
+                        break
+            finally:
+                stop_event.set()
+        
+        def forward_from_backend():
+            try:
+                backend.settimeout(1.0)
+                while not stop_event.is_set():
+                    try:
+                        data = backend.recv(4096)
+                        if not data:
+                            break
+                        ws.send(data)
+                    except stdlib_socket.timeout:
+                        continue
+                    except:
+                        break
+            finally:
+                stop_event.set()
+        
+        client_thread = Thread(target=forward_from_client, daemon=True)
+        backend_thread = Thread(target=forward_from_backend, daemon=True)
+        
+        client_thread.start()
+        backend_thread.start()
+        
+        client_thread.join()
+        backend_thread.join()
+        
+        print("WebSocket closed")
+        
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+    finally:
+        if backend:
+            try:
+                backend.close()
+            except:
+                pass
+
+
+@sock.route('/novnc/websockify')
+def novnc_websockify_proxy(ws):
+    """WebSocket proxy to VNC"""
+    return websockify_proxy_handler(ws)
+
+@sock.route('/websockify')
+def websockify_sock_proxy(ws):
+    """WebSocket proxy to VNC (alternate path)"""
+    return websockify_proxy_handler(ws)
 
 @app.route("/")
 def index():
@@ -375,8 +315,6 @@ def index():
         HTML_PAGE,
         service_name=SERVICE_NAME,
         service_description=SERVICE_DESCRIPTION,
-        vnc_port=VNC_PORT,
-        novnc_port=NOVNC_PORT,
         primary_color=PRIMARY_COLOR,
         bg_start=BG_GRADIENT_START,
         bg_end=BG_GRADIENT_END,
@@ -389,41 +327,29 @@ def health():
         "status": "healthy",
         "service": SERVICE_NAME,
         "connection": CONNECTION_NAME,
-        "vnc_ports": {"direct": int(VNC_PORT), "web": int(NOVNC_PORT)},
+        "vnc_port": int(VNC_PORT),
     }
 
 
 @app.route("/status")
 def status():
-    """Endpoint for monitoring the lab status"""
+    """Status endpoint"""
     import subprocess
 
     try:
-        # Check if VNC server is running
-        vnc_running = (
-            subprocess.run(
-                ["pgrep", "-f", "Xvnc.*:1"], capture_output=True, text=True
-            ).returncode
-            == 0
-        )
+        vnc_running = subprocess.run(
+            ["pgrep", "-f", "Xvnc.*:1"], capture_output=True
+        ).returncode == 0
 
-        # Check if websockify is running
-        websockify_running = (
-            subprocess.run(
-                ["pgrep", "-f", f"websockify.*{NOVNC_PORT}"],
-                capture_output=True,
-                text=True,
-            ).returncode
-            == 0
-        )
+        websockify_running = subprocess.run(
+            ["pgrep", "-f", f"websockify.*{WEBSOCKIFY_PORT}"], capture_output=True
+        ).returncode == 0
 
-        # Check if MJPC binary exists
-        mjpc_available = (
-            subprocess.run(
-                ["test", "-f", "/app/mujoco_mpc/build/bin/mjpc"], capture_output=True
-            ).returncode
-            == 0
-        )
+        mjpc_available = subprocess.run(
+            ["test", "-f", "/app/mujoco_mpc/build/bin/mjpc"], capture_output=True
+        ).returncode == 0
+
+        all_healthy = all([vnc_running, websockify_running, mjpc_available])
 
         return {
             "service": SERVICE_NAME,
@@ -433,10 +359,7 @@ def status():
                 "websockify": websockify_running,
                 "mjpc_binary": mjpc_available,
             },
-            "ports": {"vnc": VNC_PORT, "novnc": NOVNC_PORT, "webapp": "5000"},
-            "overall_status": "healthy"
-            if all([vnc_running, websockify_running, mjpc_available])
-            else "degraded",
+            "overall_status": "healthy" if all_healthy else "degraded",
         }
     except Exception as e:
         return {"service": SERVICE_NAME, "overall_status": "error", "error": str(e)}
@@ -444,6 +367,5 @@ def status():
 
 if __name__ == "__main__":
     print(f"Starting {SERVICE_NAME}")
-    print(f"Direct VNC: port {VNC_PORT}")
-    print(f"Web VNC: port {NOVNC_PORT}")
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    print(f"Flask on port 5000, VNC on {VNC_PORT}, Websockify on {WEBSOCKIFY_PORT}")
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

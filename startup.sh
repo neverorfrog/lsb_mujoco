@@ -2,45 +2,41 @@
 
 set -eou pipefail
 
-# Function to handle errors and prevent infinite restarts
 handle_error() {
     echo "ERROR: $1"
-    echo "Sleeping for 30 seconds before exit to prevent rapid restart loops..."
     sleep 30
     exit 1
 }
 
-# Trap errors
-trap 'handle_error "Startup script failed at line $LINENO"' ERR
+trap 'handle_error "Startup failed at line $LINENO"' ERR
 
-echo "Setting up VNC environment..."
+echo "==================================="
+echo "MJPC Lab Container Starting"
+echo "==================================="
 
-# --- 1. Clean up any existing X11 processes ---
+# --- VNC SETUP ---
+echo ""
+echo ">>> Setting up VNC environment"
 pkill -f Xvnc || true
 pkill -f vncserver || true
-sleep 1
+pkill -f websockify || true
+sleep 2
 
-# --- 2. Fix X11 authority issues ---
-echo "Setting up X11 authority..."
 export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
-echo "Attempting to create Xauthority at: $XAUTHORITY"
-
 if rm -f "$XAUTHORITY" 2>/dev/null && touch "$XAUTHORITY" 2>/dev/null; then
     chmod 600 "$XAUTHORITY"
 else
-    echo "Warning: cannot create $XAUTHORITY (permission denied). Falling back to /tmp/.Xauthority"
     export XAUTHORITY="/tmp/.Xauthority"
     rm -f "$XAUTHORITY" || true
     touch "$XAUTHORITY"
     chmod 600 "$XAUTHORITY"
 fi
 
-# --- 4. Setup xstartup ---
-echo "Ensuring xstartup script is executable..."
 chmod +x "$HOME/.vnc/xstartup"
 
-# --- 5. Start VNC Server ---
-echo "Starting Xvnc directly..."
+# --- START VNC ---
+echo ""
+echo ">>> Starting VNC Server"
 export DISPLAY=:1
 Xvnc "$DISPLAY" \
   -depth "$VNC_COL_DEPTH" \
@@ -49,86 +45,116 @@ Xvnc "$DISPLAY" \
   -AlwaysShared=1 \
   -localhost=no \
   -rfbport 5901 \
+  -BlacklistTimeout=0 \
+  -BlacklistThreshold=0 \
   -desktop "MJPC Desktop" &
-
 VNC_PID=$!
-
-# Wait for VNC server to start
 sleep 5
 
-# --- 6. Start websockify for web VNC access ---
-echo "Starting websockify for web access..."
-websockify --web=/usr/share/novnc/ 0.0.0.0:6901 localhost:5901 &
-WEBSOCKIFY_PID=$!
-
-# --- 7. Start the desktop session ---
-echo "Starting desktop session..."
-export DISPLAY=:1
-bash "$HOME/.vnc/xstartup" &
-
-# --- 8. Verify MJPC is accessible ---
-echo "Verifying MJPC application..."
-if [ ! -f "/app/mujoco_mpc/build/bin/mjpc" ]; then
-    handle_error "MJPC binary not found"
+if ! kill -0 $VNC_PID 2>/dev/null; then
+    handle_error "VNC Server failed to start"
 fi
 
-# --- 9. Start Flask webapp ---
+# --- START DESKTOP ---
+echo ""
+echo ">>> Starting desktop session"
+bash "$HOME/.vnc/xstartup" &
+sleep 3
+
+# --- VPN REGISTRATION ---
+echo ""
+echo ">>> Registering with VPN"
+if ! /app/register.sh --client lsb5; then
+    echo "❌ VPN registration failed"
+    handle_error "VPN registration failed"
+fi
+
+# Wait for VPN
+VPN_READY=false
+for i in {1..30}; do
+    if ip addr show wg0 >/dev/null 2>&1; then
+        VPN_IP=$(ip addr show wg0 | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
+        echo "✅ VPN interface UP with IP: $VPN_IP"
+        VPN_READY=true
+        break
+    fi
+    echo "Waiting for wg0... ($i/30)"
+    sleep 1
+done
+
+if [ "$VPN_READY" = false ]; then
+    handle_error "VPN interface failed"
+fi
+
+# --- START WEBSOCKIFY ON PORT 5000 ---
+echo ""
+echo ">>> Starting websockify on port 6901"
+websockify --web=/usr/share/novnc/ 0.0.0.0:6901 localhost:5901 &
+WEBSOCKIFY_PID=$!
+sleep 3
+
+if netstat -tulpn | grep -q ':6901'; then
+    echo "✅ Websockify is listening on port 6901"
+else
+    handle_error "Websockify failed to start on port 6901"
+fi
+
+# --- Start Flask webapp ---
 echo "Starting Flask webapp on port 5000..."
 cd /app
 . /app/venv/bin/activate
 python /app/app.py &
 FLASK_PID=$!
+sleep 3
 
-# --- 10. Services started ---
-echo "All services started:"
-echo "  VNC Server: display $DISPLAY (port 5901)"
-echo "  noVNC Web: port 6901"
-echo "  Flask App: port 5000"
+if netstat -tulpn | grep -q ':5000'; then
+    echo "✅ Flask is listening on port 5000"
+else
+    handle_error "Flask failed to start on port 5000"
+fi
 
-# Function to check if all services are running
+# --- FIREWALL ---
+echo ""
+echo ">>> Configuring firewall"
+iptables -I INPUT -i wg0 -p tcp --dport 5000 -j ACCEPT
+iptables -I INPUT -i wg0 -p tcp --dport 6901 -j ACCEPT
+iptables -I INPUT -i wg0 -m state --state ESTABLISHED,RELATED -j ACCEPT
+echo "✅ Firewall configured"
+
+# --- SUMMARY ---
+echo ""
+echo "==================================="
+echo "STARTUP COMPLETE"
+echo "==================================="
+echo "Services:"
+echo "  • VNC Server:    PID $VNC_PID (port 5901)"
+echo "  • Websockify:    PID $WEBSOCKIFY_PID (port 6901)"
+echo "  • Flask:         PID $FLASK_PID (port 5000)"
+echo ""
+echo "Access: http://$VPN_IP:5000"
+echo "==================================="
+
+# Monitor services
 check_services() {
-    local all_good=true
-
     if ! kill -0 $VNC_PID 2>/dev/null; then
-        echo "ERROR: VNC server (PID $VNC_PID) stopped"
-        all_good=false
+        echo "ERROR: VNC stopped"
+        handle_error "VNC stopped"
     fi
-
     if ! kill -0 $WEBSOCKIFY_PID 2>/dev/null; then
-        echo "ERROR: Websockify (PID $WEBSOCKIFY_PID) stopped"
-        all_good=false
-    fi
-
-    if ! kill -0 $FLASK_PID 2>/dev/null; then
-        echo "WARNING: Flask app (PID $FLASK_PID) stopped, restarting..."
-        cd /app
-        . /app/venv/bin/activate
-        python /app/app.py &
-        FLASK_PID=$!
-        echo "Flask app restarted with PID $FLASK_PID"
-    fi
-
-    if [ "$all_good" = false ]; then
-        handle_error "Critical services stopped"
+        echo "ERROR: Websockify stopped"
+        handle_error "Websockify stopped"
     fi
 }
 
-# Cleanup function
 cleanup() {
-    echo "Shutting down services..."
-    kill $FLASK_PID $WEBSOCKIFY_PID $VNC_PID 2>/dev/null || true
-    vncserver -kill $DISPLAY 2>/dev/null || true
+    echo "Shutting down..."
+    kill $WEBSOCKIFY_PID $VNC_PID 2>/dev/null || true
     exit 0
 }
 
-# Register lsb
-/app/register.sh --client lsb5
-
-# Set trap for cleanup
 trap cleanup SIGTERM SIGINT
 
-# Monitor services and keep container alive
-echo "Monitoring services... (Ctrl+C to stop)"
+echo ">>> Monitoring services"
 while true; do
     check_services
     sleep 10

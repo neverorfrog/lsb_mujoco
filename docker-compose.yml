@@ -5,10 +5,10 @@ services:
       context: .
       dockerfile: Dockerfile
     env_file:
-      - path: ./.env
-        required: true
+      - ./.env
     container_name: lsb_mujoco
     ports:
+      - "5000:5000"   # Flask webapp
       - "5901:5901"   # VNC
       - "6901:6901"   # noVNC / websockify
     cap_add:
