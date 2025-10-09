@@ -5,45 +5,45 @@ A containerized lab service that provides remote access to GUI applications (MuJ
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Browser (http://<VPN_IP>:5000)                                     │
-└────────────────────────┬────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│  Browser (http://<VPN_IP>:5000)                           │
+└────────────────────────┬──────────────────────────────────┘
                          │
                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Flask Web Application (Port 5000)                                  │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  HTTP Routes:                                              │    │
-│  │  • / - Main interface with styled UI                       │    │
-│  │  • /novnc/* - Proxy to noVNC static files                  │    │
-│  │  • /health - Health check endpoint                         │    │
-│  │  • /status - Service status endpoint                       │    │
-│  └─────────────────────────────────────────────────────┘    │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  WebSocket Routes (flask-sock):                            │    │
-│  │  • /novnc/websockify - Main WebSocket proxy                │    │
-│  │  • /websockify - Compatibility route                       │    │
-│  └─────────────────────────────────────────────────────┘    │
-└───────────────────────┬────────────────────────────────────┘
-                           │
-         ┌───────────────┴────────────────┐
-         │                                    │
-         ▼                                    ▼
+┌───────────────────────────────────────────────────────────┐
+│  Flask Web Application (Port 5000)                        │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │  HTTP Routes:                                       │  │
+│  │  • / - Main interface with styled UI                │  │
+│  │  • /novnc/* - Proxy to noVNC static files           │  │
+│  │  • /health - Health check endpoint                  │  │
+│  │  • /status - Service status endpoint                │  │
+│  └─────────────────────────────────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │  WebSocket Routes (flask-sock):                     │  │
+│  │  • /novnc/websockify - Main WebSocket proxy         │  │
+│  │  • /websockify - Compatibility route                │  │
+│  └─────────────────────────────────────────────────────┘  │
+└──────────────────────┬────────────────────────────────────┘
+                       │
+         ┌─────────────┴────────────────┐
+         │                              │
+         ▼                              ▼
 ┌─────────────────────┐      ┌─────────────────────────┐
-│  Websockify            │      │  Direct VNC Connection     │
-│  (Port 6901)           │      │  (Port 5901)               │
-│                        │      │                            │
-│  • Serves noVNC        │      │  Flask WebSocket ────►    │
-│    static files        │      │  VNC Server (Xvnc)         │
-│  • HTML/JS/CSS         │      │                            │
+│  Websockify         │      │  Direct VNC Connection  │
+│  (Port 6901)        │      │  (Port 5901)            │
+│                     │      │                         │
+│  • Serves noVNC     │      │  Flask WebSocket ────►  │
+│    static files     │      │  VNC Server (Xvnc)      │
+│  • HTML/JS/CSS      │      │                         │
 └─────────────────────┘      └──────────┬──────────────┘
-                                             │
-                                             ▼
+                                        │
+                                        ▼
                              ┌─────────────────────────┐
-                             │  X11 Display :1            │
-                             │  • Openbox WM              │
-                             │  • Your GUI App            │
-                             │    (MuJoCo MPC)            │
+                             │  X11 Display :1         │
+                             │  • Openbox WM           │
+                             │  • Your GUI App         │
+                             │    (MuJoCo MPC)         │
                              └─────────────────────────┘
 ```
 
